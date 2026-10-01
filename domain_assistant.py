@@ -266,6 +266,45 @@ class OpenAIGenerator:
         return answer
 
 
+class GeminiGenerator:
+    """Gemini through Google's OpenAI-compatible Chat Completions endpoint."""
+
+    def __init__(self) -> None:
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("GEMINI_API_KEY is missing from .env")
+        self.model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+        if not self.model:
+            raise RuntimeError("GEMINI_MODEL cannot be empty")
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            max_retries=0,
+        )
+
+    def generate(self, prompt: str) -> str:
+        for attempt in range(6):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                break
+            except OpenAIError as exc:
+                retryable = getattr(exc, "status_code", None) in (429, 500, 502, 503, 504)
+                quota_exhausted = any(
+                    marker in str(exc)
+                    for marker in ("credit_balance_exhausted", "GenerateRequestsPerDay")
+                )
+                if quota_exhausted or not retryable or attempt == 5:
+                    raise
+                time.sleep(min(5 * 2**attempt, 60))
+        answer = (response.choices[0].message.content or "").strip()
+        if not answer:
+            raise RuntimeError("Gemini returned an empty answer")
+        return answer
+
+
 @dataclass(frozen=True)
 class DomainResponse:
     question: str
@@ -299,7 +338,10 @@ class DomainAssistant:
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator if generator is not None else (
+                GeminiGenerator() if os.getenv("GEMINI_API_KEY", "").strip()
+                else OpenAIGenerator()
+            ),
             top_k,
         )
 
@@ -380,6 +422,7 @@ def generate_actual_answers(
     generator: TextGenerator | None = None,
     top_k: int = 5,
     progress: ProgressCallback | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Generate the auditable actual-answer artifact for all dataset questions."""
 
@@ -406,7 +449,29 @@ def generate_actual_answers(
     )
 
     answers: list[dict[str, Any]] = []
+    checkpoint = Path(checkpoint_path).expanduser().resolve() if checkpoint_path else None
+    if checkpoint is not None and checkpoint.exists():
+        saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+        saved_agent = saved.get("agent", {})
+        if (saved.get("corpus_id") != assistant.corpus_id
+                or saved_agent.get("model") != model
+                or saved_agent.get("top_k") != top_k
+                or not isinstance(saved.get("answers"), list)):
+            raise ValueError("Checkpoint corpus, model, or retrieval settings differ")
+        for index, record in enumerate(saved["answers"]):
+            if (index >= len(questions)
+                    or record.get("id") != questions[index]["id"]
+                    or record.get("question") != questions[index]["question"]
+                    or not record.get("actual_answer")
+                    or record.get("error") is not None
+                    or not isinstance(record.get("retrieved_contexts"), list)):
+                raise ValueError(f"Checkpoint answer {index + 1} does not match dataset")
+        answers = saved["answers"]
+        notify(f"Resuming {len(answers)} validated answers from {checkpoint}")
+
     for index, item in enumerate(questions, start=1):
+        if index <= len(answers):
+            continue
         percentage = index / total
         completed_before = index - 1
         filled_before = round(20 * completed_before / total)
@@ -443,6 +508,21 @@ def generate_actual_answers(
                 "error": None,
             }
         )
+
+        if checkpoint is not None:
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            partial = {
+                "schema_version": "1.0",
+                "corpus_id": assistant.corpus_id,
+                "generated_at": datetime.now(UTC).isoformat(),
+                "agent": {"name": "domain-assistant", "model": model,
+                          "top_k": top_k, "prompt_version": "1.0"},
+                "incomplete": True,
+                "answers": answers,
+            }
+            temporary = checkpoint.with_suffix(".tmp")
+            temporary.write_text(json.dumps(partial, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(checkpoint)
 
         filled_after = round(20 * percentage)
         bar_after = "#" * filled_after + "-" * (20 - filled_after)
@@ -495,19 +575,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
+        output = args.output.expanduser().resolve()
+        checkpoint = output.with_name(output.stem + ".partial.json")
         artifact = generate_actual_answers(
             args.dataset,
             args.corpus_dir,
             top_k=args.top_k,
             progress=lambda message: print(message, flush=True),
+            checkpoint_path=checkpoint,
         )
-        output = args.output.expanduser().resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         print(f"Saving actual-answer artifact: {output}", flush=True)
         output.write_text(
             json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        checkpoint.unlink(missing_ok=True)
     except (OSError, OpenAIError, TypeError, ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
         return 2
