@@ -274,19 +274,38 @@ verbosity bias và self-preference bằng cách nào?
 Chỉ làm sau khi hoàn thành 3.1–3.3. Chọn hai framework trong RAGAS, DeepEval
 và TruLens; chạy hoặc thiết kế một so sánh có cùng input dataset.
 
-| Tiêu chí | Framework 1: ____ | Framework 2: ____ |
+**Phương pháp:** Thiết kế so sánh RAGAS với DeepEval trên cùng 20 ID của
+`golden_dataset.json` và cùng câu trả lời/chunks đã lưu trong
+`artifacts/actual_answers.json`. Với mỗi ID, giữ nguyên `question`,
+`actual_answer`, `expected_answer` và **thứ tự** `retrieved_contexts`; chỉ
+chuyển tên trường sang schema của framework. RAGAS nhận `user_input`,
+`response`, `reference`, `retrieved_contexts`; DeepEval nhận `input`,
+`actual_output`, `expected_output`, `retrieval_context`. Dùng cùng một judge
+model, cấu hình ổn định, phiên bản thư viện cố định và lưu score theo ID. Không
+đưa expected answer vào bước sinh answer. Chạy lặp 3 lần để quan sát dao động
+của LLM judge, sau đó đối chiếu từng case và đọc trace ở các trường hợp bất đồng.
+
+| Tiêu chí | Framework 1: RAGAS | Framework 2: DeepEval |
 |---|---|---|
-| Setup complexity | | |
-| Metrics available | | |
-| CI/CD integration | | |
-| Kết quả trên cùng dataset | | |
-| Insight rút ra | | |
+| Setup complexity | Cài thư viện, cấu hình judge LLM và embeddings cho Answer Relevancy, chuyển artifacts sang sample; cần lưu phiên bản và chi phí gọi model. | Cài thư viện, cấu hình judge LLM, tạo `LLMTestCase` từ artifacts; có thể dùng `evaluate()` cho replay. |
+| Metrics available | Faithfulness, Answer Relevancy, Context Precision/Recall, Answer Correctness. | Faithfulness, Answer Relevancy, Contextual Precision/Recall và Contextual Relevancy. |
+| CI/CD integration | Gọi metrics từ Python/pytest trên cùng frozen artifacts và đặt gate trên report tổng hợp. | `assert_test()` và `deepeval test run` tích hợp pytest; có thể đặt ngưỡng từng metric. |
+| Kết quả trên cùng dataset | **Chưa chạy framework:** 20 ID và input đã chốt; chưa có RAGAS scores để báo cáo. | **Chưa chạy framework:** dùng đúng 20 ID/input bên trái; chưa có DeepEval scores để báo cáo. |
+| Insight rút ra | Cần so sánh score theo từng ID với DeepEval và với core overlap; score khác nhau có thể do cách judge tách claim và định nghĩa metric. | Lý do của judge và điểm theo từng ID giúp kiểm tra bất đồng; chưa thể kết luận framework nào nghiêm hơn khi chưa đo. |
 
-- Scores có nhất quán không?
-- Framework nào strict hơn và vì sao?
-- Hai framework có tìm ra cùng failure cases không?
+**Cách đọc kết quả khi chạy:** Hai framework phải dùng cùng retrieved chunks cho
+Faithfulness; core của lab dùng *gold context* cho Faithfulness nên không so
+trực tiếp ba cột này như cùng một phép đo. Tính chênh lệch score từng ID,
+tương quan thứ hạng và tỷ lệ cùng gắn cờ dưới một ngưỡng đã chốt trước; kiểm
+tra riêng A01, E04 và A02 vì word overlap của core dễ bỏ sót ý nghĩa câu từ
+chối và câu trả lời ngắn. Hiện **chưa có score của hai framework**, vì vậy chưa
+thể kết luận scores có nhất quán, framework nào strict hơn, hoặc có cùng tìm ra
+failure cases. Đây là thiết kế so sánh, không phải kết quả thực nghiệm.
 
-> *Phân tích:*
+Nguồn thiết kế: [RAGAS metrics](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/),
+[RAGAS Context Precision](https://docs.ragas.io/en/stable/concepts/metrics/available_metrics/context_precision/),
+[DeepEval RAG guide](https://deepeval.com/docs/getting-started-rag),
+[DeepEval CI/CD](https://deepeval.com/docs/evaluation-unit-testing-in-ci-cd).
 
 ### Exercise 3.5 — Retrieval Reranking (Bonus +5)
 
@@ -338,4 +357,5 @@ Hoàn thành kiểm tra cuối trong khoảng 11:50–12:00.
 - [x] Exercise 3.3 có rubric 1–5 và bias controls.
 - [x] `reflection.md` có ba failure analyses và regression strategy.
 - [x] Đã copy `template.py` thành `solution/solution.py`.
-- [x] Exercise 3.5 bonus đã đo trên sáu cases; Exercise 3.4 chưa thực hiện.
+- [x] Exercise 3.4 bonus đã thiết kế phép so sánh cùng input, chưa chạy hai frameworks.
+- [x] Exercise 3.5 bonus đã đo trên sáu cases.
